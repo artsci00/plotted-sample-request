@@ -10,24 +10,29 @@ from today. The script measures how far that row has drifted and moves every
 date in that template by the same amount. A missed day is caught up on the next
 run; a second run on the same day changes nothing.
 
-## One-time setup (about 20 minutes)
+## One-time setup (about 25 minutes)
 
-1. **Notion integration.** Signed in to the workspace where the templates live,
-   go to notion.so/profile/integrations, create an **Internal** integration in
-   that workspace, called "Sample refresh". Capabilities: Read content and
-   Update content only. Copy the secret.
-2. **Connect it to the templates.** On each published template page,
-   ••• → Connections → Sample refresh: Executive OS, 1:1 Meeting Tracker,
-   Performance & Feedback Tracker, Career Growth Tracker, Interview Loop &
-   Scorecards, Research Repository OS, Competitor Signal Tracker, The Scholar,
-   Assignment Tracker. Only the published pages, not test duplicates. The
-   integration can only touch pages connected to it, so this is the safety list.
-3. **GitHub.** Put these files in a private repo. Settings → Secrets and
-   variables → Actions → New repository secret: `NOTION_TOKEN` = the secret.
+The templates live across two Notion workspaces, and a Notion integration can
+only see the workspace it was made in, so there are two keys.
+
+1. **One integration per workspace.** Switch to the first workspace, go to
+   notion.so/profile/integrations, create an **Internal** integration in that
+   workspace called "Sample refresh", with Read content and Update content
+   only. Copy the secret. Switch workspaces and do the same again.
+2. **Connect each template to its own workspace's integration.** On each
+   published template page, ••• → Connections → Sample refresh: Executive OS,
+   1:1 Meeting Tracker, Performance & Feedback Tracker, Career Growth Tracker,
+   Interview Loop & Scorecards, Research Repository OS, Competitor Signal
+   Tracker, The Scholar, Assignment Tracker. Only the published pages, not test
+   duplicates. The integration can only touch pages connected to it, so this is
+   the safety list.
+3. **GitHub secrets.** Settings → Secrets and variables → Actions:
+   `NOTION_TOKEN` = first workspace's secret, `NOTION_TOKEN_2` = second's.
+   Which is which doesn't matter; the script finds each template wherever it is.
 4. **First run.** Actions → Refresh template sample dates → Run workflow, with
-   Dry run ticked. Read the log: each template should say "shifting by +N days"
-   and list the rows it would change. Then run again with Dry run unticked.
-   From then on it runs every morning on its own.
+   Dry run ticked. Each template should say which key found it and
+   "shifting by +N days". Then run again with Dry run unticked. From then on it
+   runs every morning on its own.
 
 ## Expected first-run shifts (from 13 Nov 2026)
 
@@ -64,10 +69,11 @@ row's date (or the offset in `TEMPLATES`) before running for real.
 
 ## When it reports an ERROR
 
-- *reference row not found* — the row was renamed or deleted, or the
-  integration isn't connected to that template. Fix the row title in
+- *not found in any workspace* — the row was renamed or deleted, or the
+  template isn't connected to its workspace's integration. Fix the row title in
   `TEMPLATES` or reconnect.
-- *found N times* — a duplicate of the template is connected. Disconnect it.
+- *found N times* or *more than one workspace* — a copy of the template is
+  connected. Disconnect the copy.
 - *no 'X' database found* — a database was renamed. Update `targets`.
 - GitHub emails you when a run fails.
 

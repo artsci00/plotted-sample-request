@@ -11,7 +11,7 @@ Self-correcting: a missed run is caught up automatically, and running twice in
 a day does nothing the second time.
 
 Usage:
-    NOTION_TOKEN=secret_xxx python3 refresh_sample_dates.py --dry-run
+    NOTION_TOKEN=secret_xxx NOTION_TOKEN_2=secret_yyy python3 refresh_sample_dates.py --dry-run
     NOTION_TOKEN=secret_xxx python3 refresh_sample_dates.py
     ... --only "Executive OS"      one template
     ... --today 2026-11-13         pretend it's another day
@@ -71,6 +71,10 @@ TEMPLATES = [
 
 
 class TemplateError(Exception):
+    pass
+
+
+class NotFound(TemplateError):
     pass
 
 
@@ -222,7 +226,7 @@ def find_reference(client, tpl):
             if prop and prop.get("type") == "date" and (prop.get("date") or {}).get("start"):
                 matches.append((db, row, prop["date"]["start"]))
     if not matches:
-        raise TemplateError(f"reference row '{ref['row']}' with a {ref['prop']} date not found in "
+        raise NotFound(f"reference row '{ref['row']}' with a {ref['prop']} date not found in "
                             f"'{ref['db']}' (is the integration connected to this template?)")
     if len(matches) > 1:
         raise TemplateError(f"reference row '{ref['row']}' found {len(matches)} times; connect the "
@@ -230,8 +234,26 @@ def find_reference(client, tpl):
     return matches[0]
 
 
-def run_template(client, tpl, today, dry_run, log):
-    ref_db, ref_row, ref_start = find_reference(client, tpl)
+def locate(clients, tpl):
+    """Find which workspace holds the template. clients is a list of (label, client)."""
+    found = []
+    for label, client in clients:
+        try:
+            found.append((label, client, find_reference(client, tpl)))
+        except NotFound:
+            continue
+    if not found:
+        raise TemplateError(f"reference row '{tpl['ref']['row']}' not found in any workspace "
+                            f"(is the integration connected to this template?)")
+    if len(found) > 1:
+        names = ", ".join(f[0] for f in found)
+        raise TemplateError(f"this template's reference row is in more than one workspace ({names}); "
+                            f"disconnect the copy that isn't the published one")
+    return found[0]
+
+
+def run_template(client, tpl, today, dry_run, log, ref=None):
+    ref_db, ref_row, ref_start = ref or find_reference(client, tpl)
     target = today + timedelta(days=tpl["ref"]["offset"])
     days = (target - local_date(ref_start)).days
     if days == 0:
@@ -278,19 +300,25 @@ def run_template(client, tpl, today, dry_run, log):
     return written, failed
 
 
-def main(argv=None, client=None, out=print):
+def tokens_from_env(env=os.environ):
+    """NOTION_TOKEN, NOTION_TOKEN_2, NOTION_TOKEN_3... one per workspace."""
+    names = sorted(k for k in env if re.fullmatch(r"NOTION_TOKEN(_\d+)?", k) and env[k].strip())
+    return [(n, env[n].strip()) for n in names]
+
+
+def main(argv=None, clients=None, out=print):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry-run", action="store_true", help="show what would change, write nothing")
     ap.add_argument("--only", help="run one template by name")
     ap.add_argument("--today", help="YYYY-MM-DD, default is today in Pacific time")
     args = ap.parse_args(argv)
 
-    if client is None:
-        token = os.environ.get("NOTION_TOKEN")
-        if not token:
-            out("NOTION_TOKEN is not set")
+    if clients is None:
+        tokens = tokens_from_env()
+        if not tokens:
+            out("No NOTION_TOKEN secrets are set")
             return 2
-        client = NotionClient(token)
+        clients = [(name, NotionClient(tok)) for name, tok in tokens]
     today = date.fromisoformat(args.today) if args.today else datetime.now(TZ).date()
     templates = [t for t in TEMPLATES if not args.only or norm(t["name"]) == norm(args.only)]
     if not templates:
@@ -302,7 +330,10 @@ def main(argv=None, client=None, out=print):
     for tpl in templates:
         out(f"\n{tpl['name']}")
         try:
-            written, failed = run_template(client, tpl, today, args.dry_run, out)
+            label, client, ref = locate(clients, tpl)
+            if len(clients) > 1:
+                out(f"  found via {label}")
+            written, failed = run_template(client, tpl, today, args.dry_run, out, ref=ref)
             if written or failed:
                 verb = "would update" if args.dry_run else "updated"
                 out(f"  {verb} {written} pages" + (f", {failed} failed" if failed else ""))

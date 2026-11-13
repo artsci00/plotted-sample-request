@@ -28,6 +28,7 @@ jobs:
       - name: Refresh
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_TOKEN_2: ${{ secrets.NOTION_TOKEN_2 }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
           ONLY: ${{ inputs.only }}
         run: |

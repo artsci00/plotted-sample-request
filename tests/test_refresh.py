@@ -216,7 +216,7 @@ class MainTests(unittest.TestCase):
                  page("a", "Old note", "db1", Date="2026-06-19")]
         w = FakeNotion(dbs, pages)
         lines = []
-        code = r.main(["--today", "2026-11-13"], client=w, out=lines.append)
+        code = r.main(["--today", "2026-11-13"], clients=[("NOTION_TOKEN", w)], out=lines.append)
         self.assertEqual(code, 1)                              # the other eight aren't in this fake
         self.assertEqual(w.date_of("ref", "Date"), "2026-11-09")  # Performance & Feedback still ran
         self.assertEqual(w.date_of("a", "Date"), "2026-08-31")
@@ -225,8 +225,36 @@ class MainTests(unittest.TestCase):
     def test_only_runs_one_template(self):
         w = FakeNotion([], [])
         lines = []
-        r.main(["--only", "executive os", "--dry-run"], client=w, out=lines.append)
+        r.main(["--only", "executive os", "--dry-run"], clients=[("NOTION_TOKEN", w)], out=lines.append)
         self.assertEqual(sum(line.startswith("\n") for line in lines if "Executive OS" in line), 1)
+
+
+class TwoWorkspaceTests(unittest.TestCase):
+    def perf_in(self):
+        dbs = [database("db1", "Feedback Log", {"type": "page_id", "page_id": "P1"})]
+        return FakeNotion(dbs, [page("ref", "Caught the race condition before it shipped", "db1",
+                                     Date="2026-08-28")])
+
+    def test_template_is_found_in_whichever_workspace_holds_it(self):
+        empty, holder = FakeNotion([], []), self.perf_in()
+        lines = []
+        r.main(["--today", "2026-11-13", "--only", "Performance & Feedback Tracker"],
+               clients=[("NOTION_TOKEN", empty), ("NOTION_TOKEN_2", holder)], out=lines.append)
+        self.assertEqual(holder.date_of("ref", "Date"), "2026-11-09")
+        self.assertTrue(any("found via NOTION_TOKEN_2" in line for line in lines))
+
+    def test_template_in_both_workspaces_is_refused(self):
+        a, b = self.perf_in(), self.perf_in()
+        lines = []
+        code = r.main(["--today", "2026-11-13", "--only", "Performance & Feedback Tracker"],
+                      clients=[("NOTION_TOKEN", a), ("NOTION_TOKEN_2", b)], out=lines.append)
+        self.assertEqual(code, 1)
+        self.assertEqual(a.patches + b.patches, [])
+        self.assertTrue(any("more than one workspace" in line for line in lines))
+
+    def test_tokens_are_read_in_order_and_blanks_ignored(self):
+        env = {"NOTION_TOKEN_2": "b", "NOTION_TOKEN": "a", "NOTION_TOKEN_3": " ", "OTHER": "x"}
+        self.assertEqual(r.tokens_from_env(env), [("NOTION_TOKEN", "a"), ("NOTION_TOKEN_2", "b")])
 
 
 if __name__ == "__main__":
