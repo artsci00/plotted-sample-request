@@ -214,10 +214,25 @@ def page_title(page):
 
 
 # ------------------------------------------------------------------- core
+def describe_page(client, page_id):
+    """A human label for a template's root page: its title and link."""
+    if page_id in (None, "workspace"):
+        return "a page at the top of the workspace"
+    try:
+        pg = client.request("GET", f"/pages/{page_id}")
+    except Exception:
+        return f"page {page_id}"
+    url = pg.get("url")
+    return f"'{page_title(pg)}'" + (f" ({url})" if url else "")
+
+
 def find_reference(client, tpl):
     ref = tpl["ref"]
     matches = []
-    for db in find_databases(client, ref["db"]):
+    dbs = find_databases(client, ref["db"])
+    if not dbs:
+        raise NotFound(f"no '{ref['db']}' database visible")
+    for db in dbs:
         tprop = title_property(db)
         rows = paginate(client, "POST", f"/databases/{db['id']}/query",
                         {"filter": {"property": tprop, "title": {"equals": ref["row"]}}, "page_size": 100})
@@ -226,25 +241,34 @@ def find_reference(client, tpl):
             if prop and prop.get("type") == "date" and (prop.get("date") or {}).get("start"):
                 matches.append((db, row, prop["date"]["start"]))
     if not matches:
-        raise NotFound(f"reference row '{ref['row']}' with a {ref['prop']} date not found in "
-                            f"'{ref['db']}' (is the integration connected to this template?)")
+        raise NotFound(f"'{ref['db']}' database found ({len(dbs)}), but no row named "
+                       f"'{ref['row']}' with a {ref['prop']} date")
     if len(matches) > 1:
-        raise TemplateError(f"reference row '{ref['row']}' found {len(matches)} times; connect the "
-                            f"integration to the published template page only, not to duplicates")
+        cache = {}
+        roots = [root_page(client, m[0], cache) for m in matches]
+        if len(set(roots)) == 1:
+            raise TemplateError(f"{len(matches)} rows named '{ref['row']}' inside the same template "
+                                f"{describe_page(client, roots[0])}; rename or delete the extra one")
+        places = "; ".join(describe_page(client, rp) for rp in dict.fromkeys(roots))
+        raise TemplateError(f"reference row '{ref['row']}' is in {len(set(roots))} different pages: {places}. "
+                            f"Disconnect the integration from every one except the published template")
     return matches[0]
 
 
 def locate(clients, tpl):
     """Find which workspace holds the template. clients is a list of (label, client)."""
-    found = []
+    found, misses = [], []
     for label, client in clients:
         try:
             found.append((label, client, find_reference(client, tpl)))
-        except NotFound:
+        except NotFound as e:
+            misses.append(f"{label}: {e}")
             continue
+        except TemplateError as e:
+            raise TemplateError(f"{e} (seen via {label})") if len(clients) > 1 else e
     if not found:
-        raise TemplateError(f"reference row '{tpl['ref']['row']}' not found in any workspace "
-                            f"(is the integration connected to this template?)")
+        raise TemplateError("template not found. " + "; ".join(misses) +
+                            ". Is the integration connected to this template's page?")
     if len(found) > 1:
         names = ", ".join(f[0] for f in found)
         raise TemplateError(f"this template's reference row is in more than one workspace ({names}); "

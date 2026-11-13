@@ -53,6 +53,10 @@ class FakeNotion:
             return {"results": copy.deepcopy(rows), "has_more": False}
         if path.startswith("/databases/"):
             return self.dbs[path.split("/")[2]]
+        if method == "GET" and path.startswith("/pages/"):
+            pid = path.split("/")[2]
+            return {"id": pid, "url": f"https://www.notion.so/{pid}",
+                    "properties": {"title": {"type": "title", "title": title(f"Page {pid}")}}}
         if path.startswith("/blocks/"):
             return self.blocks[path.split("/")[2]]
         if method == "PATCH" and path.startswith("/pages/"):
@@ -192,9 +196,30 @@ class AmbiguityTests(unittest.TestCase):
         pages = [page("1", "Caught it", "x", Date="2026-08-28"),
                  page("2", "Caught it", "y", Date="2026-08-28")]
         w = FakeNotion(dbs, pages)
-        with self.assertRaises(r.TemplateError):
+        with self.assertRaises(r.TemplateError) as cm:
             r.run_template(w, TPL, date(2026, 11, 13), False, lambda *_: None)
         self.assertEqual(w.patches, [])
+        msg = str(cm.exception)
+        self.assertIn("https://www.notion.so/P1 copy", msg)
+        self.assertIn("Disconnect", msg)
+
+    def test_duplicate_row_inside_one_template_says_rename(self):
+        dbs = [database("x", "Feedback Log", {"type": "page_id", "page_id": "P1"})]
+        pages = [page("1", "Caught it", "x", Date="2026-08-28"),
+                 page("2", "Caught it", "x", Date="2026-08-28")]
+        w = FakeNotion(dbs, pages)
+        with self.assertRaises(r.TemplateError) as cm:
+            r.find_reference(w, TPL)
+        self.assertIn("inside the same template", str(cm.exception))
+
+    def test_not_found_says_whether_database_or_row_is_missing(self):
+        no_db = FakeNotion([], [])
+        no_row = FakeNotion([database("x", "Feedback Log", {"type": "page_id", "page_id": "P1"})], [])
+        with self.assertRaises(r.TemplateError) as cm:
+            r.locate([("NOTION_TOKEN", no_db), ("NOTION_TOKEN_2", no_row)], TPL)
+        msg = str(cm.exception)
+        self.assertIn("NOTION_TOKEN: no 'Feedback Log' database visible", msg)
+        self.assertIn("NOTION_TOKEN_2: 'Feedback Log' database found (1), but no row", msg)
 
     def test_database_inside_a_column_resolves_to_its_template_page(self):
         dbs = [database("db1", "Feedback Log", {"type": "block_id", "block_id": "col"})]
