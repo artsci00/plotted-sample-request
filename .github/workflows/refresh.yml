@@ -1,0 +1,37 @@
+name: Refresh template sample dates
+
+on:
+  schedule:
+    - cron: "17 13 * * *"   # every day, 5:17 or 6:17 am Pacific
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (show changes, write nothing)"
+        type: boolean
+        default: true
+      only:
+        description: "Only this template (blank = all)"
+        type: string
+        default: ""
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test
+        run: python -m unittest discover -s tests
+      - name: Refresh
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          ONLY: ${{ inputs.only }}
+        run: |
+          args=()
+          [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
+          [ -n "$ONLY" ] && args+=(--only "$ONLY")
+          python refresh_sample_dates.py "${args[@]}"
