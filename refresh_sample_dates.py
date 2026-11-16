@@ -37,8 +37,7 @@ EXCLUDE_PROPERTIES = {"published"}   # real publication dates of real articles
 TEMPLATES = [
     {"name": "Executive OS", "page": "Executive OS",
      "ref": {"db": "Action Items", "row": "Approve marketing budget", "prop": "Due Date", "offset": -5},
-     "targets": ["Action Items", "People & Stakeholders", "Meetings", "Decisions Log",
-                 "Strategic Priorities"]},
+     "targets": ["Action Items", "People", "Meetings", "Decisions", "Priorities"]},
     {"name": "1:1 Meeting Tracker",
      "ref": {"db": "Open Items", "row": "Check the comp plan question with finance", "prop": "Raised",
              "offset": 0},

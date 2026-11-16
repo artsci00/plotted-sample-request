@@ -60,7 +60,7 @@ row's date (or the offset in `TEMPLATES`) before running for real.
 
 ## Still yours to do by hand
 
-- **Each quarter:** Executive OS Strategic Priorities Quarter/Year and the
+- **Each quarter:** Executive OS Priorities Quarter/Year and the
   "Quarter: Q_ 20__" header line.
 - **Each term:** The Scholar's semester line.
 - **Each January:** titles that name a year ("Draft 2027 planning framework").
