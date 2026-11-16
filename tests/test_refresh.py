@@ -43,7 +43,7 @@ class FakeNotion:
 
     def request(self, method, path, body=None):
         if path == "/search":
-            q = r.norm(body["query"])
+            q = r.norm(body.get("query", ""))
             return {"results": [d for d in self.dbs.values() if q in r.norm(r.db_title(d))],
                     "has_more": False}
         if path.startswith("/databases/") and path.endswith("/query"):
@@ -296,6 +296,20 @@ class TemplatePageTests(unittest.TestCase):
         r.run_template(w, tpl("AT", "Assignment Tracker", 1), date(2026, 11, 16), False, lambda *_: None)
         self.assertEqual(w.date_of("a1", "Due Date"), "2026-11-17")
         self.assertEqual(w.date_of("s1", "Due Date"), "2026-11-22")
+
+
+class MissingTargetTests(unittest.TestCase):
+    def test_missing_target_lists_what_the_template_does_contain(self):
+        tpl = {"name": "Exec", "page": "Executive OS",
+               "ref": {"db": "Action Items", "row": "Approve", "prop": "Due Date", "offset": -5},
+               "targets": ["Action Items", "Decisions Log"]}
+        dbs = [database("ai", "Action Items", {"type": "page_id", "page_id": "HOME"}),
+               database("dc", "Decisions", {"type": "page_id", "page_id": "HOME"})]
+        w = FakeNotion(dbs, [page("ref", "Approve", "ai", Due_Date="2026-08-14")],
+                       page_titles={"HOME": "Executive OS"})
+        logs = []
+        r.run_template(w, tpl, date(2026, 11, 16), True, logs.append)
+        self.assertIn("  databases this key can see inside the template: Action Items, Decisions", logs)
 
 
 class TwoWorkspaceTests(unittest.TestCase):

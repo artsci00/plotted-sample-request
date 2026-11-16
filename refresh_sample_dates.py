@@ -145,7 +145,8 @@ def find_databases(client, title):
     found = paginate(client, "POST", "/search",
                      {"query": title, "filter": {"property": "object", "value": "database"},
                       "page_size": 100})
-    return [d for d in found if d.get("object") == "database" and norm(db_title(d)) == norm(title)]
+    return [d for d in found if d.get("object") == "database"
+            and (not title or norm(db_title(d)) == norm(title))]
 
 
 def ancestors(client, obj, cache):
@@ -311,6 +312,7 @@ def run_template(client, tpl, today, dry_run, log, ref=None):
 
     cache = {}
     plan = []
+    missing = False
     for title in tpl["targets"]:
         candidates = find_databases(client, title)
         dbs = [d for d in candidates if home in ancestors(client, d, cache) or
@@ -318,6 +320,7 @@ def run_template(client, tpl, today, dry_run, log, ref=None):
         if not dbs:
             elsewhere = f" ({len(candidates)} with that name elsewhere)" if candidates else ""
             log(f"  ! no '{title}' database inside this template{elsewhere}, skipped")
+            missing = True
             continue
         for db in dbs:
             rows = paginate(client, "POST", f"/databases/{db['id']}/query", {"page_size": 100})
@@ -325,6 +328,11 @@ def run_template(client, tpl, today, dry_run, log, ref=None):
                 changes = planned_changes(row, days)
                 if changes:
                     plan.append((title, row, changes))
+
+    if missing:
+        inside = sorted({db_title(d) for d in find_databases(client, "")
+                         if home in ancestors(client, d, cache)})
+        log("  databases this key can see inside the template: " + (", ".join(inside) or "none"))
 
     # Reference row first: if it can't be written, nothing else moves, so the
     # next run recomputes the same shift instead of applying it twice.
