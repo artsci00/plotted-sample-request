@@ -32,7 +32,9 @@ def database(did, name, parent):
 
 
 class FakeNotion:
-    def __init__(self, dbs, pages, blocks=None, fail_on=()):
+    def __init__(self, dbs, pages, blocks=None, fail_on=(), page_titles=None, page_parents=None):
+        self.page_titles = page_titles or {}
+        self.page_parents = page_parents or {}
         self.dbs = {d["id"]: d for d in dbs}
         self.pages = {p["id"]: p for p in pages}
         self.blocks = blocks or {}
@@ -56,7 +58,9 @@ class FakeNotion:
         if method == "GET" and path.startswith("/pages/"):
             pid = path.split("/")[2]
             return {"id": pid, "url": f"https://www.notion.so/{pid}",
-                    "properties": {"title": {"type": "title", "title": title(f"Page {pid}")}}}
+                    "parent": self.page_parents.get(pid, {"type": "workspace", "workspace": True}),
+                    "properties": {"title": {"type": "title",
+                                             "title": title(self.page_titles.get(pid, f"Page {pid}"))}}}
         if path.startswith("/blocks/"):
             return self.blocks[path.split("/")[2]]
         if method == "PATCH" and path.startswith("/pages/"):
@@ -239,7 +243,7 @@ class MainTests(unittest.TestCase):
         dbs = [database("db1", "Feedback Log", {"type": "page_id", "page_id": "P1"})]
         pages = [page("ref", "Caught the race condition before it shipped", "db1", Date="2026-08-28"),
                  page("a", "Old note", "db1", Date="2026-06-19")]
-        w = FakeNotion(dbs, pages)
+        w = FakeNotion(dbs, pages, page_titles={"P1": "Performance & Feedback Tracker"})
         lines = []
         code = r.main(["--today", "2026-11-13"], clients=[("NOTION_TOKEN", w)], out=lines.append)
         self.assertEqual(code, 1)                              # the other eight aren't in this fake
@@ -254,11 +258,52 @@ class MainTests(unittest.TestCase):
         self.assertEqual(sum(line.startswith("\n") for line in lines if "Executive OS" in line), 1)
 
 
+class TemplatePageTests(unittest.TestCase):
+    def test_databases_on_subpages_of_the_template_are_shifted(self):
+        # Executive OS keeps some databases on subpages, not next to Action Items.
+        tpl = {"name": "Exec", "page": "Executive OS",
+               "ref": {"db": "Action Items", "row": "Approve", "prop": "Due Date", "offset": -5},
+               "targets": ["Action Items", "Decisions Log"]}
+        dbs = [database("ai", "Action Items", {"type": "page_id", "page_id": "HOME"}),
+               database("dl", "Decisions Log", {"type": "page_id", "page_id": "SUB"}),
+               database("other", "Decisions Log", {"type": "page_id", "page_id": "ELSEWHERE"})]
+        pages = [page("ref", "Approve", "ai", Due_Date="2026-08-14"),
+                 page("d", "Pick vendor", "dl", Date="2026-08-01"),
+                 page("x", "Unrelated", "other", Date="2026-01-01")]
+        w = FakeNotion(dbs, pages,
+                       page_titles={"HOME": "Executive OS - Connected Operating System",
+                                    "SUB": "Decisions", "ELSEWHERE": "Scratch"},
+                       page_parents={"SUB": {"type": "page_id", "page_id": "HOME"}})
+        ref = r.find_reference(w, tpl)
+        r.run_template(w, tpl, date(2026, 11, 16), False, lambda *_: None, ref=ref)
+        self.assertEqual(w.date_of("ref", "Due Date"), "2026-11-11")
+        self.assertEqual(w.date_of("d", "Date"), "2026-10-29")
+        self.assertEqual(w.date_of("x", "Date"), "2026-01-01")
+
+    def test_page_name_separates_templates_sharing_a_database(self):
+        # The Scholar and Assignment Tracker both have "Assignments & Tasks" with the same row.
+        def tpl(name, page_name, offset):
+            return {"name": name, "page": page_name,
+                    "ref": {"db": "Assignments & Tasks", "row": "Calculus Problem Set 4",
+                            "prop": "Due Date", "offset": offset},
+                    "targets": ["Assignments & Tasks"]}
+        dbs = [database("s", "Assignments & Tasks", {"type": "page_id", "page_id": "SCH"}),
+               database("a", "Assignments & Tasks", {"type": "page_id", "page_id": "AT"})]
+        pages = [page("s1", "Calculus Problem Set 4", "s", Due_Date="2026-11-22"),
+                 page("a1", "Calculus Problem Set 4", "a", Due_Date="2026-09-01")]
+        w = FakeNotion(dbs, pages, page_titles={"SCH": "The Scholar — Student Planner & Grade Tracker",
+                                                "AT": "Assignment Tracker"})
+        r.run_template(w, tpl("AT", "Assignment Tracker", 1), date(2026, 11, 16), False, lambda *_: None)
+        self.assertEqual(w.date_of("a1", "Due Date"), "2026-11-17")
+        self.assertEqual(w.date_of("s1", "Due Date"), "2026-11-22")
+
+
 class TwoWorkspaceTests(unittest.TestCase):
     def perf_in(self):
         dbs = [database("db1", "Feedback Log", {"type": "page_id", "page_id": "P1"})]
         return FakeNotion(dbs, [page("ref", "Caught the race condition before it shipped", "db1",
-                                     Date="2026-08-28")])
+                                     Date="2026-08-28")],
+                          page_titles={"P1": "Performance & Feedback Tracker"})
 
     def test_template_is_found_in_whichever_workspace_holds_it(self):
         empty, holder = FakeNotion([], []), self.perf_in()

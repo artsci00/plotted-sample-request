@@ -35,7 +35,7 @@ EXCLUDE_PROPERTIES = {"published"}   # real publication dates of real articles
 
 # ref_offset: where the reference row's date belongs, in days from today.
 TEMPLATES = [
-    {"name": "Executive OS",
+    {"name": "Executive OS", "page": "Executive OS",
      "ref": {"db": "Action Items", "row": "Approve marketing budget", "prop": "Due Date", "offset": -5},
      "targets": ["Action Items", "People & Stakeholders", "Meetings", "Decisions Log",
                  "Strategic Priorities"]},
@@ -43,7 +43,7 @@ TEMPLATES = [
      "ref": {"db": "Open Items", "row": "Check the comp plan question with finance", "prop": "Raised",
              "offset": 0},
      "targets": ["Open Items", "People"]},
-    {"name": "Performance & Feedback Tracker",
+    {"name": "Performance & Feedback Tracker", "page": "Performance & Feedback Tracker",
      "ref": {"db": "Feedback Log", "row": "Caught the race condition before it shipped", "prop": "Date",
              "offset": -4},
      "targets": ["Feedback Log"]},
@@ -60,13 +60,14 @@ TEMPLATES = [
     {"name": "Competitor Signal Tracker",
      "ref": {"db": "Signals", "row": "Gridline raises $18M Series A", "prop": "Captured", "offset": -12},
      "targets": ["Signals", "Competitors"]},
-    {"name": "The Scholar",
+    {"name": "The Scholar", "page": "The Scholar",
      "ref": {"db": "Assignments & Tasks", "row": "Calculus Problem Set 4", "prop": "Due Date",
              "offset": 6},
      "targets": ["Assignments & Tasks"]},
-    {"name": "Assignment Tracker",
-     "ref": {"db": "Assignments", "row": "Calculus Problem Set 4", "prop": "Due Date", "offset": 1},
-     "targets": ["Assignments"]},
+    {"name": "Assignment Tracker", "page": "Assignment Tracker",
+     "ref": {"db": "Assignments & Tasks", "row": "Calculus Problem Set 4", "prop": "Due Date",
+             "offset": 1},
+     "targets": ["Assignments & Tasks"]},
 ]
 
 
@@ -147,16 +148,18 @@ def find_databases(client, title):
     return [d for d in found if d.get("object") == "database" and norm(db_title(d)) == norm(title)]
 
 
-def root_page(client, obj, cache):
-    """The page a database ultimately lives on, walking up through columns and toggles."""
-    parent = obj.get("parent", {})
-    for _ in range(12):
+def ancestors(client, obj, cache):
+    """Every page above a database, nearest first, walking through columns, toggles and subpages."""
+    out, parent = [], obj.get("parent", {})
+    for _ in range(25):
         kind = parent.get("type")
         if kind == "page_id":
-            return parent["page_id"]
-        if kind == "workspace":
-            return "workspace"
-        if kind == "database_id":
+            key = parent["page_id"]
+            out.append(key)
+            if ("page", key) not in cache:
+                cache[("page", key)] = client.request("GET", f"/pages/{key}")
+            parent = cache[("page", key)].get("parent", {})
+        elif kind == "database_id":
             key = parent["database_id"]
             if key not in cache:
                 cache[key] = client.request("GET", f"/databases/{key}")
@@ -168,6 +171,19 @@ def root_page(client, obj, cache):
             parent = cache[key].get("parent", {})
         else:
             break
+    return out
+
+
+def template_home(client, tpl, db, cache):
+    """The template's top page for a database: the ancestor named like tpl['page'] when the
+    template sets one, otherwise the page the database sits on. None if no ancestor matches."""
+    chain = ancestors(client, db, cache)
+    if not tpl.get("page"):
+        return chain[0] if chain else "workspace"
+    want = norm(tpl["page"])
+    for pid in chain:
+        if norm(page_title(cache[("page", pid)])).startswith(want):
+            return pid
     return None
 
 
@@ -226,26 +242,32 @@ def describe_page(client, page_id):
     return f"'{page_title(pg)}'" + (f" ({url})" if url else "")
 
 
-def find_reference(client, tpl):
+def find_reference(client, tpl, cache=None):
+    """Returns (db, row, start, home page id)."""
     ref = tpl["ref"]
+    cache = {} if cache is None else cache
     matches = []
     dbs = find_databases(client, ref["db"])
     if not dbs:
         raise NotFound(f"no '{ref['db']}' database visible")
-    for db in dbs:
+    homes = {db["id"]: template_home(client, tpl, db, cache) for db in dbs}
+    mine = [db for db in dbs if homes[db["id"]]]
+    if not mine:
+        raise NotFound(f"'{ref['db']}' database found ({len(dbs)}), but none inside a page "
+                       f"named '{tpl['page']}'")
+    for db in mine:
         tprop = title_property(db)
         rows = paginate(client, "POST", f"/databases/{db['id']}/query",
                         {"filter": {"property": tprop, "title": {"equals": ref["row"]}}, "page_size": 100})
         for row in rows:
             prop = row.get("properties", {}).get(ref["prop"])
             if prop and prop.get("type") == "date" and (prop.get("date") or {}).get("start"):
-                matches.append((db, row, prop["date"]["start"]))
+                matches.append((db, row, prop["date"]["start"], homes[db["id"]]))
     if not matches:
-        raise NotFound(f"'{ref['db']}' database found ({len(dbs)}), but no row named "
+        raise NotFound(f"'{ref['db']}' database found ({len(mine)}), but no row named "
                        f"'{ref['row']}' with a {ref['prop']} date")
     if len(matches) > 1:
-        cache = {}
-        roots = [root_page(client, m[0], cache) for m in matches]
+        roots = [m[3] for m in matches]
         if len(set(roots)) == 1:
             raise TemplateError(f"{len(matches)} rows named '{ref['row']}' inside the same template "
                                 f"{describe_page(client, roots[0])}; rename or delete the extra one")
@@ -277,7 +299,7 @@ def locate(clients, tpl):
 
 
 def run_template(client, tpl, today, dry_run, log, ref=None):
-    ref_db, ref_row, ref_start = ref or find_reference(client, tpl)
+    ref_db, ref_row, ref_start, home = ref or find_reference(client, tpl)
     target = today + timedelta(days=tpl["ref"]["offset"])
     days = (target - local_date(ref_start)).days
     if days == 0:
@@ -288,12 +310,14 @@ def run_template(client, tpl, today, dry_run, log, ref=None):
     log(f"  shifting by {days:+d} days (reference row {local_date(ref_start)} -> {target})")
 
     cache = {}
-    home = root_page(client, ref_db, cache)
     plan = []
     for title in tpl["targets"]:
-        dbs = [d for d in find_databases(client, title) if root_page(client, d, cache) == home]
+        candidates = find_databases(client, title)
+        dbs = [d for d in candidates if home in ancestors(client, d, cache) or
+               (home == "workspace" and not ancestors(client, d, cache))]
         if not dbs:
-            log(f"  ! no '{title}' database found next to '{tpl['ref']['db']}', skipped")
+            elsewhere = f" ({len(candidates)} with that name elsewhere)" if candidates else ""
+            log(f"  ! no '{title}' database inside this template{elsewhere}, skipped")
             continue
         for db in dbs:
             rows = paginate(client, "POST", f"/databases/{db['id']}/query", {"page_size": 100})
@@ -355,8 +379,8 @@ def main(argv=None, clients=None, out=print):
         out(f"\n{tpl['name']}")
         try:
             label, client, ref = locate(clients, tpl)
-            if len(clients) > 1:
-                out(f"  found via {label}")
+            where = describe_page(client, ref[3])
+            out(f"  found via {label} in {where}" if len(clients) > 1 else f"  found in {where}")
             written, failed = run_template(client, tpl, today, args.dry_run, out, ref=ref)
             if written or failed:
                 verb = "would update" if args.dry_run else "updated"
